@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Finança" />
+  <meta name="theme-color" content="#0d0d1a" />
+  <title>Finança Pessoal</title>
+
+  <!-- PWA Manifest -->
+  <link rel="manifest" href="manifest.json" />
+
+  <!-- Apple touch icons -->
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <link rel="apple-touch-icon" sizes="192x192" href="icon-192.png" />
+  <link rel="apple-touch-icon" sizes="512x512" href="icon-512.png" />
+
+  <!-- Splash screen color -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+
+  <style>
+    html, body { margin: 0; padding: 0; background: #0d0d1a; height: 100%; overflow: hidden; }
+    #root { height: 100dvh; overflow: hidden; }
+    /* iOS safe area */
+    body { padding-top: env(safe-area-inset-top); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <!-- React & Babel (CDN, cached by SW) -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <script type="text/babel" data-presets="react">
+// ─── Inject app code ──────────────────────────────────────────────────────────
+const { useState, useEffect, useCallback } = React;
+
+const CLIENT_ID = "";
+const API_KEY = "";
+const SCOPES = "https://www.googleapis.com/auth/drive.appdata";
+const FILE_NAME = "financa-pessoal-data.json";
+
+const CATEGORIES = {
+  income: [
+    { id: "salario", label: "Salário", emoji: "💼" },
+    { id: "freelance", label: "Freelance", emoji: "💻" },
+    { id: "investimentos", label: "Investimentos", emoji: "📈" },
+    { id: "outros_entrada", label: "Outros", emoji: "➕" },
+  ],
+  expense: [
+    { id: "moradia", label: "Moradia", emoji: "🏠" },
+    { id: "alimentacao", label: "Alimentação", emoji: "🍽️" },
+    { id: "transporte", label: "Transporte", emoji: "🚗" },
+    { id: "saude", label: "Saúde", emoji: "💊" },
+    { id: "lazer", label: "Lazer", emoji: "🎮" },
+    { id: "educacao", label: "Educação", emoji: "📚" },
+    { id: "vestuario", label: "Vestuário", emoji: "👗" },
+    { id: "outros_saida", label: "Outros", emoji: "➖" },
+  ],
+};
+
+const CARD_COLORS = ["#7b4fff","#ff4fa0","#00c6ff","#ff9500","#00e676","#ff5252","#ffd600","#18ffff"];
+const ALL_CATS = [...CATEGORIES.income, ...CATEGORIES.expense];
+const getCat = (id) => ALL_CATS.find((c) => c.id === id) || { label: id, emoji: "•" };
+const fmt = (v) => new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v || 0);
+const todayStr = () => new Date().toISOString().slice(0, 10);
+const monthKey = (d) => d.slice(0, 7);
+
+const EMPTY_FORM = {
+  type: "expense", amount: "", category: "alimentacao", description: "",
+  date: todayStr(), paymentMethod: "money", cardId: "", installments: "1",
+};
+
+function App() {
+  const [transactions, setTransactions] = useState([]);
+  const [cards, setCards] = useState([]);
+  const [tab, setTab] = useState("home");
+  const [form, setForm] = useState(EMPTY_FORM);
+  const [gapiReady, setGapiReady] = useState(false);
+  const [gisReady, setGisReady] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+  const [driveFileId, setDriveFileId] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState("");
+  const [userCreds, setUserCreds] = useState({ clientId: CLIENT_ID, apiKey: API_KEY });
+  const [credsSaved, setCredsSaved] = useState(!!(CLIENT_ID && API_KEY));
+  const [filterMonth, setFilterMonth] = useState(monthKey(todayStr()));
+  const [tokenClient, setTokenClient] = useState(null);
+  const [deleteId, setDeleteId] = useState(null);
+  const [cardModal, setCardModal] = useState(false);
+  const [cardForm, setCardForm] = useState({ name: "", color: CARD_COLORS[0], limit: "", closingDay: "1", dueDay: "10" });
+  const [editCardId, setEditCardId] = useState(null);
+  const [cardDetailId, setCardDetailId] = useState(null);
+  const [filterCard, setFilterCard] = useState("all");
+
+  useEffect(() => {
+    const saved = localStorage.getItem("fp_creds");
+    if (saved) { const c = JSON.parse(saved); setUserCreds(c); setCredsSaved(!!(c.clientId && c.apiKey)); }
+    const localData = localStorage.getItem("fp_transactions");
+    if (localData) setTransactions(JSON.parse(localData));
+    const localCards = localStorage.getItem("fp_cards");
+    if (localCards) setCards(JSON.parse(localCards));
+  }, []);
+
+  useEffect(() => { localStorage.setItem("fp_transactions", JSON.stringify(transactions)); }, [transactions]);
+  useEffect(() => { localStorage.setItem("fp_cards", JSON.stringify(cards)); }, [cards]);
+
+  useEffect(() => {
+    if (!credsSaved) return;
+    const loadGapi = () => { if (window.gapi) { initGapi(); return; } const s = document.createElement("script"); s.src = "https://apis.google.com/js/api.js"; s.onload = initGapi; document.head.appendChild(s); };
+    const loadGis = () => { if (window.google?.accounts) { initGis(); return; } const s = document.createElement("script"); s.src = "https://accounts.google.com/gsi/client"; s.onload = initGis; document.head.appendChild(s); };
+    loadGapi(); loadGis();
+  }, [credsSaved, userCreds]);
+
+  const initGapi = () => { window.gapi.load("client", async () => { await window.gapi.client.init({ apiKey: userCreds.apiKey, discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/drive/v3/rest"] }); setGapiReady(true); }); };
+  const initGis = () => { const tc = window.google.accounts.oauth2.initTokenClient({ client_id: userCreds.clientId, scope: SCOPES, callback: async (resp) => { if (resp.error) { setSyncMsg("Erro ao autenticar"); return; } setSignedIn(true); setSyncMsg("Conectado! Sincronizando…"); await syncFromDrive(); } }); setTokenClient(tc); setGisReady(true); };
+  const signIn = () => { if (!gapiReady || !gisReady) { setSyncMsg("APIs ainda carregando…"); return; } tokenClient?.requestAccessToken({ prompt: "consent" }); };
+  const signOut = () => { const token = window.gapi?.client?.getToken(); if (token) window.google.accounts.oauth2.revoke(token.access_token); window.gapi?.client?.setToken(null); setSignedIn(false); setDriveFileId(null); setSyncMsg("Desconectado."); };
+
+  const findOrCreateFile = async () => {
+    const list = await window.gapi.client.drive.files.list({ spaces: "appDataFolder", q: `name='${FILE_NAME}'`, fields: "files(id,name)" });
+    if (list.result.files.length > 0) return list.result.files[0].id;
+    const create = await window.gapi.client.request({ path: "/drive/v3/files", method: "POST", body: { name: FILE_NAME, parents: ["appDataFolder"] } });
+    return create.result.id;
+  };
+
+  const syncFromDrive = useCallback(async () => {
+    setSyncing(true);
+    try {
+      const fid = await findOrCreateFile(); setDriveFileId(fid);
+      const res = await window.gapi.client.drive.files.get({ fileId: fid, alt: "media" });
+      if (res.body) { const data = JSON.parse(res.body); setTransactions(data.transactions || []); if (data.cards) setCards(data.cards); setSyncMsg("✓ Dados sincronizados"); }
+      else { setSyncMsg("✓ Arquivo novo criado"); }
+    } catch (e) { setSyncMsg("Erro: " + (e.message || e)); }
+    setSyncing(false);
+  }, []);
+
+  const saveToDrive = useCallback(async (txs, cds) => {
+    if (!signedIn || !driveFileId) return;
+    setSyncing(true);
+    try {
+      const content = JSON.stringify({ transactions: txs, cards: cds, updatedAt: new Date().toISOString() });
+      await window.gapi.client.request({ path: `/upload/drive/v3/files/${driveFileId}`, method: "PATCH", params: { uploadType: "media" }, body: content, headers: { "Content-Type": "application/json" } });
+      setSyncMsg("✓ Salvo no Drive");
+    } catch (e) { setSyncMsg("Erro ao salvar: " + (e.message || e)); }
+    setSyncing(false);
+  }, [signedIn, driveFileId]);
+
+  const addTransaction = () => {
+    if (!form.amount || isNaN(form.amount)) return;
+    const totalAmount = parseFloat(form.amount);
+    const numInstallments = form.paymentMethod === "credit" ? Math.max(1, parseInt(form.installments) || 1) : 1;
+    const installmentAmount = totalAmount / numInstallments;
+    const newTxs = [];
+    const groupId = Date.now().toString();
+    for (let i = 0; i < numInstallments; i++) {
+      const baseDate = new Date(form.date + "T12:00:00");
+      baseDate.setMonth(baseDate.getMonth() + i);
+      newTxs.push({
+        id: groupId + "_" + i, type: form.type,
+        amount: parseFloat(installmentAmount.toFixed(2)),
+        category: form.category,
+        description: form.description + (numInstallments > 1 ? ` (${i + 1}/${numInstallments})` : ""),
+        date: baseDate.toISOString().slice(0, 10),
+        paymentMethod: form.paymentMethod,
+        cardId: form.paymentMethod !== "money" ? form.cardId : "",
+        totalAmount, installments: numInstallments, installmentIndex: i, groupId,
+      });
+    }
+    const updated = [...newTxs, ...transactions];
+    setTransactions(updated); saveToDrive(updated, cards);
+    setForm(EMPTY_FORM); setTab("home");
+  };
+
+  const deleteTransaction = (id) => {
+    const updated = transactions.filter((t) => t.id !== id);
+    setTransactions(updated); saveToDrive(updated, cards); setDeleteId(null);
+  };
+
+  const saveCard = () => {
+    if (!cardForm.name.trim()) return;
+    let updatedCards;
+    if (editCardId) { updatedCards = cards.map((c) => c.id === editCardId ? { ...c, ...cardForm } : c); }
+    else { updatedCards = [...cards, { ...cardForm, id: Date.now().toString() }]; }
+    setCards(updatedCards); saveToDrive(transactions, updatedCards);
+    setCardModal(false); setCardForm({ name: "", color: CARD_COLORS[0], limit: "", closingDay: "1", dueDay: "10" }); setEditCardId(null);
+  };
+
+  const deleteCard = (id) => { const u = cards.filter((c) => c.id !== id); setCards(u); saveToDrive(transactions, u); };
+  const openEditCard = (card) => { setCardForm({ name: card.name, color: card.color, limit: card.limit, closingDay: card.closingDay, dueDay: card.dueDay }); setEditCardId(card.id); setCardModal(true); };
+
+  const allMonths = [...new Set(transactions.map((t) => monthKey(t.date)))].sort().reverse();
+  const displayMonths = allMonths.length ? allMonths : [monthKey(todayStr())];
+
+  const monthTxs = transactions.filter((t) => {
+    const inMonth = t.date.startsWith(filterMonth);
+    const inCard = filterCard === "all" || t.cardId === filterCard || (filterCard === "money" && t.paymentMethod === "money") || (filterCard === "debit" && t.paymentMethod === "debit");
+    return inMonth && inCard;
+  });
+
+  const totalIncome = monthTxs.filter((t) => t.type === "income").reduce((s, t) => s + t.amount, 0);
+  const totalExpense = monthTxs.filter((t) => t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const balance = totalIncome - totalExpense;
+  const expByCategory = monthTxs.filter((t) => t.type === "expense").reduce((acc, t) => { acc[t.category] = (acc[t.category] || 0) + t.amount; return acc; }, {});
+  const sortedCats = Object.entries(expByCategory).sort((a, b) => b[1] - a[1]);
+  const maxCatVal = sortedCats[0]?.[1] || 1;
+  const recentTxs = [...transactions].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 6);
+  const monthLabel = (m) => { const [y, mo] = m.split("-"); return new Date(+y, +mo - 1).toLocaleDateString("pt-BR", { month: "long", year: "numeric" }); };
+  const getCard = (id) => cards.find((c) => c.id === id);
+  const cardSpend = (cardId) => transactions.filter((t) => t.date.startsWith(filterMonth) && t.cardId === cardId && t.type === "expense").reduce((s, t) => s + t.amount, 0);
+  const saveCreds = () => { localStorage.setItem("fp_creds", JSON.stringify(userCreds)); setCredsSaved(!!(userCreds.clientId && userCreds.apiKey)); setSyncMsg("Salvo! Recarregue."); };
+  const payMethodLabel = (tx) => {
+    if (tx.paymentMethod === "money") return "💵 Dinheiro";
+    if (tx.paymentMethod === "debit") { const c = getCard(tx.cardId); return c ? `💳 Débito · ${c.name}` : "💳 Débito"; }
+    if (tx.paymentMethod === "credit") { const c = getCard(tx.cardId); const inst = tx.installments > 1 ? ` · ${tx.installmentIndex + 1}/${tx.installments}` : ""; return c ? `💳 ${c.name}${inst}` : `💳 Crédito${inst}`; }
+    return "";
+  };
+  const cardDetailTxs = cardDetailId ? transactions.filter((t) => t.cardId === cardDetailId && t.date.startsWith(filterMonth) && t.type === "expense").sort((a, b) => b.date.localeCompare(a.date)) : [];
+  const cardDetailTotal = cardDetailTxs.reduce((s, t) => s + t.amount, 0);
+
+  return (
+    <div style={S.shell}>
+      <style>{css}</style>
+      <header style={S.header}>
+        <span style={S.logo}>💰 Finança</span>
+        <div style={S.syncRow}>
+          {syncing && <span style={{ fontSize: 16, animation: "spin 1s linear infinite" }}>⟳</span>}
+          {syncMsg && !syncing && <span style={{ fontSize: 10, opacity: 0.6 }}>{syncMsg}</span>}
+          {!signedIn
+            ? <button onClick={signIn} style={S.pillBtn} disabled={!credsSaved}>{credsSaved ? "☁ Drive" : "⚙ Config"}</button>
+            : <button onClick={signOut} style={{ ...S.pillBtn, background: "#2a2a3a" }}>⏏ Sair</button>}
+        </div>
+      </header>
+
+      <main style={S.main}>
+        {tab === "home" && (
+          <div className="fadeIn">
+            <div style={S.balanceCard}>
+              <div style={S.balLabel}>Saldo do mês</div>
+              <div style={{ ...S.balAmount, color: balance >= 0 ? "#7effa0" : "#ff7e9a" }}>{fmt(balance)}</div>
+              <div style={S.balMeta}><span>↑ {fmt(totalIncome)}</span><span>↓ {fmt(totalExpense)}</span></div>
+              <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+                <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ ...S.monthSelect, flex: 1 }}>
+                  {displayMonths.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+                </select>
+                <select value={filterCard} onChange={(e) => setFilterCard(e.target.value)} style={{ ...S.monthSelect, flex: 1 }}>
+                  <option value="all">Todos</option><option value="money">💵 Dinheiro</option><option value="debit">💳 Débito</option>
+                  {cards.map((c) => <option key={c.id} value={c.id}>💳 {c.name}</option>)}
+                </select>
+              </div>
+            </div>
+
+            {cards.length > 0 && (
+              <section style={S.section}>
+                <div style={S.sectionTitle}>Meus cartões</div>
+                <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 8 }}>
+                  {cards.map((card) => {
+                    const spent = cardSpend(card.id); const limit = parseFloat(card.limit) || 0; const pct = limit ? Math.min((spent / limit) * 100, 100) : 0;
+                    return (
+                      <div key={card.id} onClick={() => setCardDetailId(card.id)} style={{ ...S.cardChip, borderColor: card.color + "60", background: card.color + "18" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: card.color }}>{card.name}</span>
+                          <span style={{ fontSize: 9, opacity: 0.5 }}>fecha {card.closingDay}</span>
+                        </div>
+                        <div style={{ fontSize: 14, fontWeight: 800 }}>{fmt(spent)}</div>
+                        {limit > 0 && (<><div style={{ fontSize: 9, opacity: 0.5, marginTop: 2 }}>de {fmt(limit)}</div><div style={{ height: 3, background: "#1e1e30", borderRadius: 99, marginTop: 6, overflow: "hidden" }}><div style={{ height: "100%", width: `${pct}%`, background: pct > 85 ? "#ff4466" : card.color, borderRadius: 99 }} /></div></>)}
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+
+            {sortedCats.length > 0 && (
+              <section style={S.section}>
+                <div style={S.sectionTitle}>Gastos por categoria</div>
+                {sortedCats.map(([catId, val]) => { const cat = getCat(catId); return (
+                  <div key={catId} style={S.catRow}>
+                    <div style={S.catLabel}><span>{cat.emoji}</span><span style={{ fontSize: 11 }}>{cat.label}</span></div>
+                    <div style={S.barTrack}><div style={{ ...S.barFill, width: `${(val / maxCatVal) * 100}%` }} /></div>
+                    <div style={S.catAmt}>{fmt(val)}</div>
+                  </div>
+                ); })}
+              </section>
+            )}
+
+            <section style={S.section}>
+              <div style={S.sectionTitle}>Últimas transações</div>
+              {recentTxs.length === 0 && <div style={S.empty}>Nenhuma transação ainda.<br />Toque + para adicionar.</div>}
+              {recentTxs.map((t) => <TxRow key={t.id} tx={t} payLabel={payMethodLabel(t)} cardColor={getCard(t.cardId)?.color} onDelete={() => setDeleteId(t.id)} />)}
+            </section>
+          </div>
+        )}
+
+        {tab === "add" && (
+          <div className="fadeIn" style={S.addForm}>
+            <div style={S.sectionTitle}>Nova transação</div>
+            <div style={S.typeToggle}>
+              {["expense", "income"].map((tp) => (
+                <button key={tp} onClick={() => setForm({ ...form, type: tp, category: tp === "expense" ? "alimentacao" : "salario" })}
+                  style={{ ...S.typeBtn, ...(form.type === tp ? S.typeBtnActive(tp) : {}) }}>
+                  {tp === "expense" ? "↓ Gasto" : "↑ Entrada"}
+                </button>
+              ))}
+            </div>
+            <label style={S.label}>Valor (R$)</label>
+            <input type="number" inputMode="decimal" placeholder="0,00" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} style={S.input} />
+            <label style={S.label}>Categoria</label>
+            <div style={S.catGrid}>
+              {CATEGORIES[form.type].map((c) => (
+                <button key={c.id} onClick={() => setForm({ ...form, category: c.id })} style={{ ...S.catChip, ...(form.category === c.id ? S.catChipActive : {}) }}>
+                  <span style={{ fontSize: 18 }}>{c.emoji}</span><span style={{ fontSize: 10 }}>{c.label}</span>
+                </button>
+              ))}
+            </div>
+            <label style={S.label}>Descrição</label>
+            <input type="text" placeholder="Ex: Almoço no restaurante" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} style={S.input} />
+            <label style={S.label}>Data</label>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} style={S.input} />
+            {form.type === "expense" && (<>
+              <label style={S.label}>Forma de pagamento</label>
+              <div style={S.typeToggle}>
+                {[{ id: "money", label: "💵 Dinheiro" }, { id: "debit", label: "💳 Débito" }, { id: "credit", label: "💳 Crédito" }].map((pm) => (
+                  <button key={pm.id} onClick={() => setForm({ ...form, paymentMethod: pm.id, cardId: "", installments: "1" })}
+                    style={{ ...S.typeBtn, fontSize: 12, ...(form.paymentMethod === pm.id ? { background: "#1e0a40", borderColor: "#7b4fff" } : {}) }}>
+                    {pm.label}
+                  </button>
+                ))}
+              </div>
+              {(form.paymentMethod === "debit" || form.paymentMethod === "credit") && (<>
+                <label style={S.label}>Cartão</label>
+                {cards.length === 0
+                  ? <div style={{ fontSize: 12, opacity: 0.5, padding: "8px 0" }}>Nenhum cartão. Cadastre em <b>Cartões</b>.</div>
+                  : <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 4 }}>
+                      {cards.map((c) => (
+                        <button key={c.id} onClick={() => setForm({ ...form, cardId: c.id })}
+                          style={{ padding: "8px 14px", borderRadius: 20, border: `2px solid ${form.cardId === c.id ? c.color : "#2a2a5a"}`, background: form.cardId === c.id ? c.color + "25" : "#12122a", color: "#f0f0ff", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                          {c.name}
+                        </button>
+                      ))}
+                    </div>
+                }
+              </>)}
+              {form.paymentMethod === "credit" && (<>
+                <label style={S.label}>Parcelas</label>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                  {["1","2","3","4","5","6","7","8","9","10","11","12"].map((n) => (
+                    <button key={n} onClick={() => setForm({ ...form, installments: n })}
+                      style={{ width: 42, height: 42, borderRadius: 10, border: `2px solid ${form.installments === n ? "#7b4fff" : "#2a2a5a"}`, background: form.installments === n ? "#1e0a40" : "#12122a", color: "#f0f0ff", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                      {n}x
+                    </button>
+                  ))}
+                </div>
+                {parseInt(form.installments) > 1 && form.amount && (
+                  <div style={{ fontSize: 12, opacity: 0.6, marginTop: 8 }}>= {fmt(parseFloat(form.amount) / parseInt(form.installments))} / mês por {form.installments} meses</div>
+                )}
+              </>)}
+            </>)}
+            <button onClick={addTransaction} style={S.saveBtn}>Salvar transação</button>
+          </div>
+        )}
+
+        {tab === "history" && (
+          <div className="fadeIn">
+            <div style={S.sectionTitle}>Histórico completo</div>
+            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+              <select value={filterMonth} onChange={(e) => setFilterMonth(e.target.value)} style={{ ...S.monthSelect, flex: 1, marginTop: 0 }}>
+                {displayMonths.map((m) => <option key={m} value={m}>{monthLabel(m)}</option>)}
+              </select>
+              <select value={filterCard} onChange={(e) => setFilterCard(e.target.value)} style={{ ...S.monthSelect, flex: 1, marginTop: 0 }}>
+                <option value="all">Todos</option><option value="money">💵 Dinheiro</option><option value="debit">💳 Débito</option>
+                {cards.map((c) => <option key={c.id} value={c.id}>💳 {c.name}</option>)}
+              </select>
+            </div>
+            {monthTxs.length === 0 && <div style={S.empty}>Nenhuma transação neste período.</div>}
+            {[...monthTxs].sort((a, b) => b.date.localeCompare(a.date)).map((t) => (
+              <TxRow key={t.id} tx={t} payLabel={payMethodLabel(t)} cardColor={getCard(t.cardId)?.color} onDelete={() => setDeleteId(t.id)} />
+            ))}
+          </div>
+        )}
+
+        {tab === "cards" && (
+          <div className="fadeIn">
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+              <div style={S.sectionTitle}>Meus cartões</div>
+              <button onClick={() => { setCardForm({ name: "", color: CARD_COLORS[0], limit: "", closingDay: "1", dueDay: "10" }); setEditCardId(null); setCardModal(true); }}
+                style={{ ...S.pillBtn, background: "linear-gradient(135deg,#7b4fff,#ff4fa0)" }}>+ Novo</button>
+            </div>
+            {cards.length === 0 && <div style={S.empty}>Nenhum cartão.<br />Toque em "+ Novo" para adicionar.</div>}
+            {cards.map((card) => {
+              const spent = cardSpend(card.id); const limit = parseFloat(card.limit) || 0; const pct = limit ? Math.min((spent / limit) * 100, 100) : 0;
+              return (
+                <div key={card.id} style={{ ...S.cardFull, borderLeft: `4px solid ${card.color}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+                    <div>
+                      <div style={{ fontWeight: 800, fontSize: 16, color: card.color }}>{card.name}</div>
+                      <div style={{ fontSize: 11, opacity: 0.5, marginTop: 2 }}>Fecha dia {card.closingDay} · Vence dia {card.dueDay}</div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button onClick={() => openEditCard(card)} style={S.iconBtn}>✏️</button>
+                      <button onClick={() => { if (confirm(`Excluir "${card.name}"?`)) deleteCard(card.id); }} style={S.iconBtn}>🗑</button>
+                    </div>
+                  </div>
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+                      <span style={{ opacity: 0.6 }}>Gasto em {monthLabel(filterMonth)}</span>
+                      <span style={{ fontWeight: 700 }}>{fmt(spent)}</span>
+                    </div>
+                    {limit > 0 && (<>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, opacity: 0.5, marginTop: 2 }}>
+                        <span>Disponível</span><span>{fmt(limit - spent)}</span>
+                      </div>
+                      <div style={{ height: 4, background: "#1e1e30", borderRadius: 99, marginTop: 8, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: `${pct}%`, background: pct > 85 ? "#ff4466" : card.color, borderRadius: 99, transition: "width 0.6s" }} />
+                      </div>
+                      <div style={{ fontSize: 10, opacity: 0.4, marginTop: 4, textAlign: "right" }}>{pct.toFixed(0)}% do limite</div>
+                    </>)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {tab === "settings" && (
+          <div className="fadeIn" style={S.addForm}>
+            <div style={S.sectionTitle}>Configurações</div>
+            <div style={S.settingsCard}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>🔑 Google Drive API</div>
+              <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 12, lineHeight: 1.5 }}>Crie um projeto no Google Cloud Console com a Drive API e credenciais OAuth 2.0 para sincronizar.</div>
+              <label style={S.label}>Client ID</label>
+              <input type="text" placeholder="xxxx.apps.googleusercontent.com" value={userCreds.clientId} onChange={(e) => setUserCreds({ ...userCreds, clientId: e.target.value })} style={{ ...S.input, fontSize: 11 }} />
+              <label style={S.label}>API Key</label>
+              <input type="text" placeholder="AIza..." value={userCreds.apiKey} onChange={(e) => setUserCreds({ ...userCreds, apiKey: e.target.value })} style={{ ...S.input, fontSize: 11 }} />
+              <button onClick={saveCreds} style={S.saveBtn}>Salvar credenciais</button>
+            </div>
+            <div style={S.settingsCard}>
+              <div style={{ fontWeight: 700, marginBottom: 8 }}>💾 Dados locais</div>
+              <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>Os dados ficam salvos no dispositivo. O Drive é sincronização extra.</div>
+              <button onClick={() => { if (confirm("Apagar todos os dados?")) { setTransactions([]); setCards([]); localStorage.removeItem("fp_transactions"); localStorage.removeItem("fp_cards"); } }}
+                style={{ ...S.saveBtn, background: "#ff4466" }}>🗑 Limpar dados</button>
+            </div>
+          </div>
+        )}
+      </main>
+
+      <nav style={S.nav}>
+        {[
+          { id: "home", icon: "🏠", label: "Início" },
+          { id: "history", icon: "📋", label: "Histórico" },
+          { id: "add", icon: "＋", label: "Adicionar" },
+          { id: "cards", icon: "💳", label: "Cartões" },
+          { id: "settings", icon: "⚙", label: "Config" },
+        ].map((n) => (
+          <button key={n.id} onClick={() => setTab(n.id)} style={{ ...S.navBtn, ...(tab === n.id ? S.navBtnActive : {}) }}>
+            <span style={{ fontSize: n.id === "add" ? 20 : 16 }}>{n.icon}</span>
+            <span style={{ fontSize: 9 }}>{n.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      {deleteId && (
+        <div style={S.modalOverlay} onClick={() => setDeleteId(null)}>
+          <div style={S.modal} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 700, marginBottom: 8 }}>Excluir transação?</div>
+            <div style={{ fontSize: 13, opacity: 0.6, marginBottom: 20 }}>Esta ação não pode ser desfeita.</div>
+            <div style={{ display: "flex", gap: 12 }}>
+              <button onClick={() => setDeleteId(null)} style={S.modalBtn}>Cancelar</button>
+              <button onClick={() => deleteTransaction(deleteId)} style={{ ...S.modalBtn, background: "#ff4466" }}>Excluir</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cardModal && (
+        <div style={S.modalOverlay} onClick={() => setCardModal(false)}>
+          <div style={{ ...S.modal, textAlign: "left", padding: 24 }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ fontWeight: 800, fontSize: 16, marginBottom: 16 }}>{editCardId ? "Editar cartão" : "Novo cartão"}</div>
+            <label style={S.label}>Nome</label>
+            <input type="text" placeholder="Ex: Nubank, Itaú Gold…" value={cardForm.name} onChange={(e) => setCardForm({ ...cardForm, name: e.target.value })} style={S.input} />
+            <label style={S.label}>Cor</label>
+            <div style={{ display: "flex", gap: 8, marginTop: 4, flexWrap: "wrap" }}>
+              {CARD_COLORS.map((c) => (
+                <button key={c} onClick={() => setCardForm({ ...cardForm, color: c })}
+                  style={{ width: 30, height: 30, borderRadius: "50%", background: c, border: cardForm.color === c ? "3px solid #fff" : "3px solid transparent", cursor: "pointer" }} />
+              ))}
+            </div>
+            <label style={S.label}>Limite (R$)</label>
+            <input type="number" inputMode="decimal" placeholder="Ex: 5000" value={cardForm.limit} onChange={(e) => setCardForm({ ...cardForm, limit: e.target.value })} style={S.input} />
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1 }}>
+                <label style={S.label}>Dia fechamento</label>
+                <input type="number" min="1" max="31" value={cardForm.closingDay} onChange={(e) => setCardForm({ ...cardForm, closingDay: e.target.value })} style={S.input} />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={S.label}>Dia vencimento</label>
+                <input type="number" min="1" max="31" value={cardForm.dueDay} onChange={(e) => setCardForm({ ...cardForm, dueDay: e.target.value })} style={S.input} />
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
+              <button onClick={() => setCardModal(false)} style={{ ...S.modalBtn, flex: 1 }}>Cancelar</button>
+              <button onClick={saveCard} style={{ ...S.modalBtn, flex: 2, background: "linear-gradient(135deg,#7b4fff,#ff4fa0)" }}>Salvar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {cardDetailId && (() => {
+        const card = getCard(cardDetailId); if (!card) return null;
+        return (
+          <div style={S.modalOverlay} onClick={() => setCardDetailId(null)}>
+            <div style={{ ...S.modal, textAlign: "left", padding: 24, maxHeight: "80dvh", overflowY: "auto" }} onClick={(e) => e.stopPropagation()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                <div style={{ fontWeight: 800, fontSize: 16, color: card.color }}>{card.name}</div>
+                <button onClick={() => setCardDetailId(null)} style={{ background: "none", border: "none", color: "#fff", fontSize: 18, cursor: "pointer" }}>✕</button>
+              </div>
+              <div style={{ fontWeight: 800, fontSize: 28, marginBottom: 4 }}>{fmt(cardDetailTotal)}</div>
+              <div style={{ fontSize: 12, opacity: 0.5, marginBottom: 16 }}>gasto em {monthLabel(filterMonth)}</div>
+              {cardDetailTxs.length === 0
+                ? <div style={{ fontSize: 13, opacity: 0.4, textAlign: "center", padding: 16 }}>Nenhum gasto neste mês.</div>
+                : cardDetailTxs.map((t) => <TxRow key={t.id} tx={t} payLabel={payMethodLabel(t)} cardColor={card.color} onDelete={() => { deleteTransaction(t.id); setCardDetailId(null); }} />)}
+            </div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
+function TxRow({ tx, payLabel, cardColor, onDelete }) {
+  const cat = getCat(tx.category); const isIncome = tx.type === "income";
+  return (
+    <div style={S.txRow}>
+      <span style={S.txEmoji}>{cat.emoji}</span>
+      <div style={S.txInfo}>
+        <div style={S.txTitle}>{tx.description || cat.label}</div>
+        <div style={{ display: "flex", gap: 6, alignItems: "center", marginTop: 2, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 10, opacity: 0.45 }}>{cat.label} · {tx.date.split("-").reverse().join("/")}</span>
+          {payLabel && <span style={{ fontSize: 9, fontWeight: 700, background: cardColor ? cardColor + "25" : "#1e1e30", color: cardColor || "#aaa", borderRadius: 6, padding: "1px 5px" }}>{payLabel}</span>}
+        </div>
+      </div>
+      <div style={{ ...S.txAmount, color: isIncome ? "#7effa0" : "#ff7e9a" }}>{isIncome ? "+" : "-"}{fmt(tx.amount)}</div>
+      <button onClick={onDelete} style={S.delBtn}>✕</button>
+    </div>
+  );
+}
+
+const S = {
+  shell: { minHeight: "100dvh", background: "#0d0d1a", color: "#f0f0ff", fontFamily: "'DM Sans','Nunito',sans-serif", display: "flex", flexDirection: "column", maxWidth: 430, margin: "0 auto", position: "relative" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "14px 20px 12px", borderBottom: "1px solid #1e1e30", background: "#0d0d1a", position: "sticky", top: 0, zIndex: 10 },
+  logo: { fontWeight: 800, fontSize: 20, letterSpacing: -0.5 },
+  syncRow: { display: "flex", gap: 8, alignItems: "center" },
+  pillBtn: { background: "#1e1e40", color: "#f0f0ff", border: "none", borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  main: { flex: 1, overflowY: "auto", padding: "16px 16px 100px" },
+  balanceCard: { background: "linear-gradient(135deg,#1a1a3e 0%,#12122a 100%)", border: "1px solid #2a2a5a", borderRadius: 20, padding: "22px 20px 16px", marginBottom: 20 },
+  balLabel: { fontSize: 11, opacity: 0.6, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 },
+  balAmount: { fontSize: 34, fontWeight: 800, letterSpacing: -1.5, marginBottom: 10 },
+  balMeta: { display: "flex", gap: 20, fontSize: 13, opacity: 0.7 },
+  monthSelect: { marginTop: 14, background: "#0d0d1a", color: "#f0f0ff", border: "1px solid #2a2a5a", borderRadius: 10, padding: "6px 10px", fontSize: 12, width: "100%" },
+  section: { marginBottom: 22 },
+  sectionTitle: { fontSize: 11, fontWeight: 700, opacity: 0.45, textTransform: "uppercase", letterSpacing: 1.2, marginBottom: 12 },
+  catRow: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8 },
+  catLabel: { display: "flex", gap: 5, alignItems: "center", width: 88, flexShrink: 0 },
+  barTrack: { flex: 1, height: 5, background: "#1e1e30", borderRadius: 99, overflow: "hidden" },
+  barFill: { height: "100%", background: "linear-gradient(90deg,#7b4fff,#ff4fa0)", borderRadius: 99, transition: "width 0.6s ease" },
+  catAmt: { fontSize: 11, width: 68, textAlign: "right", opacity: 0.8 },
+  txRow: { display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: "1px solid #1a1a2e" },
+  txEmoji: { fontSize: 20, width: 34, textAlign: "center" },
+  txInfo: { flex: 1, minWidth: 0 },
+  txTitle: { fontSize: 13, fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  txAmount: { fontSize: 13, fontWeight: 700, flexShrink: 0 },
+  delBtn: { background: "none", border: "none", color: "#ff4466", cursor: "pointer", fontSize: 13, padding: "0 2px", opacity: 0.5 },
+  empty: { textAlign: "center", opacity: 0.4, fontSize: 14, padding: "24px 0", lineHeight: 1.8 },
+  addForm: { paddingBottom: 16 },
+  typeToggle: { display: "flex", gap: 8, marginBottom: 12 },
+  typeBtn: { flex: 1, padding: "10px 4px", border: "2px solid #1e1e30", borderRadius: 12, background: "#12122a", color: "#f0f0ff", fontSize: 13, fontWeight: 700, cursor: "pointer" },
+  typeBtnActive: (tp) => ({ background: tp === "expense" ? "#3a0020" : "#003a20", borderColor: tp === "expense" ? "#ff4466" : "#44ff88" }),
+  label: { display: "block", fontSize: 10, opacity: 0.5, textTransform: "uppercase", letterSpacing: 1, marginBottom: 6, marginTop: 14 },
+  input: { width: "100%", background: "#12122a", border: "1px solid #2a2a5a", borderRadius: 12, padding: "12px 14px", color: "#f0f0ff", fontSize: 15, boxSizing: "border-box" },
+  catGrid: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 7, marginTop: 4 },
+  catChip: { display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "9px 3px", background: "#12122a", border: "2px solid #1e1e30", borderRadius: 12, cursor: "pointer", color: "#f0f0ff" },
+  catChipActive: { borderColor: "#7b4fff", background: "#1e0a40" },
+  saveBtn: { marginTop: 22, width: "100%", padding: 15, background: "linear-gradient(135deg,#7b4fff,#ff4fa0)", border: "none", borderRadius: 14, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer" },
+  nav: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, background: "#0d0d1a", borderTop: "1px solid #1e1e30", display: "flex", justifyContent: "space-around", padding: "8px 0 max(8px,env(safe-area-inset-bottom))", zIndex: 20 },
+  navBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: "none", border: "none", color: "#f0f0ff", cursor: "pointer", opacity: 0.4, padding: "4px 10px" },
+  navBtnActive: { opacity: 1 },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "flex-end", zIndex: 100 },
+  modal: { width: "100%", background: "#1a1a2e", borderRadius: "20px 20px 0 0", padding: 28, textAlign: "center" },
+  modalBtn: { flex: 1, padding: 14, border: "none", borderRadius: 12, background: "#2a2a4a", color: "#fff", fontSize: 14, fontWeight: 700, cursor: "pointer" },
+  settingsCard: { background: "#12122a", border: "1px solid #2a2a5a", borderRadius: 16, padding: 18, marginBottom: 16 },
+  cardChip: { minWidth: 140, flexShrink: 0, border: "1.5px solid", borderRadius: 16, padding: "12px 14px", cursor: "pointer" },
+  cardFull: { background: "#12122a", borderRadius: 16, padding: 18, marginBottom: 14 },
+  iconBtn: { background: "none", border: "none", fontSize: 16, cursor: "pointer" },
+};
+
+const css = `
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;600;700;800&display=swap');
+  * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: #0d0d1a; }
+  input[type=date]::-webkit-calendar-picker-indicator { filter: invert(1); }
+  input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
+  select option { background: #12122a; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes fadeSlide { from { opacity:0; transform:translateY(12px); } to { opacity:1; transform:none; } }
+  .fadeIn { animation: fadeSlide 0.3s ease; }
+  ::-webkit-scrollbar { display: none; }
+`;
+
+// Mount
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+  </script>
+
+  <!-- PWA Service Worker registration -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('./sw.js')
+          .then(r => console.log('SW registrado:', r.scope))
+          .catch(e => console.log('SW erro:', e));
+      });
+    }
+  </script>
+</body>
+</html>
