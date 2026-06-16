@@ -13,7 +13,7 @@
   <link rel="apple-touch-icon" href="icon-192.png" />
   <style>
     html, body { margin: 0; padding: 0; background: #0d0d1a; height: 100%; }
-    #root { height: 100dvh; overflow: hidden; }
+    #root { height: 100dvh; }
     body { padding-top: env(safe-area-inset-top); }
   </style>
 </head>
@@ -525,9 +525,7 @@ function App() {
               </>
             )}
 
-            <button onClick={addTransaction} style={S.saveBtn}>
-              {form.useInstallments ? `Salvar ${form.installments} parcelas` : form.recurrence !== "none" ? `Salvar ${form.recurrenceMonths} ocorrências` : "Salvar transação"}
-            </button>
+            <div style={{ height: 90 }} />
           </div>
         )}
 
@@ -607,17 +605,26 @@ function App() {
               <input type="text" placeholder="xxxx.apps.googleusercontent.com" value={userCreds.clientId} onChange={(e) => setUserCreds({ ...userCreds, clientId: e.target.value })} style={{ ...S.input, fontSize: 11 }} />
               <label style={S.label}>API Key</label>
               <input type="text" placeholder="AIza..." value={userCreds.apiKey} onChange={(e) => setUserCreds({ ...userCreds, apiKey: e.target.value })} style={{ ...S.input, fontSize: 11 }} />
-              <button onClick={saveCreds} style={S.saveBtn}>Salvar credenciais</button>
+              <button onClick={saveCreds} style={{ ...S.saveBtn, marginTop: 22 }}>Salvar credenciais</button>
             </div>
             <div style={S.settingsCard}>
               <div style={{ fontWeight: 700, marginBottom: 8 }}>💾 Dados locais</div>
               <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 12 }}>Os dados ficam salvos no dispositivo. O Drive é sincronização extra.</div>
               <button onClick={() => { if (confirm("Apagar todos os dados?")) { setTransactions([]); setCards([]); localStorage.removeItem("fp_transactions"); localStorage.removeItem("fp_cards"); } }}
-                style={{ ...S.saveBtn, background: "#ff4466" }}>🗑 Limpar dados</button>
+                style={{ ...S.saveBtn, background: "#ff4466", marginTop: 0 }}>🗑 Limpar dados</button>
             </div>
           </div>
         )}
       </main>
+
+      {/* Botão salvar fixo no fundo (só na aba add) */}
+      {tab === "add" && (
+        <div style={S.saveBar}>
+          <button onClick={addTransaction} style={S.saveBtn}>
+            {form.useInstallments ? `💾 Salvar ${form.installments} parcelas` : form.recurrence !== "none" ? `💾 Salvar ${form.recurrenceMonths} ocorrências` : "💾 Salvar transação"}
+          </button>
+        </div>
+      )}
 
       {/* Nav */}
       <nav style={S.nav}>
@@ -726,7 +733,7 @@ const S = {
   logo: { fontWeight: 800, fontSize: 20, letterSpacing: -0.5 },
   syncRow: { display: "flex", gap: 8, alignItems: "center" },
   pillBtn: { background: "#1e1e40", color: "#f0f0ff", border: "none", borderRadius: 20, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
-  main: { flex: 1, overflowY: "auto", padding: "16px 16px 100px" },
+  main: { flex: 1, overflowY: "auto", padding: "16px 16px 180px" },
   balanceCard: { background: "linear-gradient(135deg,#1a1a3e 0%,#12122a 100%)", border: "1px solid #2a2a5a", borderRadius: 20, padding: "22px 20px 16px", marginBottom: 20 },
   balLabel: { fontSize: 11, opacity: 0.6, marginBottom: 4, textTransform: "uppercase", letterSpacing: 1 },
   balAmount: { fontSize: 34, fontWeight: 800, letterSpacing: -1.5, marginBottom: 10 },
@@ -760,7 +767,8 @@ const S = {
   subCard: { background: "#12122a", border: "1px solid #2a2a5a", borderRadius: 14, padding: "14px 14px 12px", marginTop: 10 },
   subCardTitle: { fontSize: 10, opacity: 0.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: 1, marginBottom: 10 },
   calcHint: { fontSize: 12, opacity: 0.55, marginTop: 10, fontStyle: "italic" },
-  saveBtn: { marginTop: 22, width: "100%", padding: 15, background: "linear-gradient(135deg,#7b4fff,#ff4fa0)", border: "none", borderRadius: 14, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer" },
+  saveBar: { position: "fixed", bottom: "calc(60px + env(safe-area-inset-bottom))", left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, padding: "10px 16px", background: "linear-gradient(to top, #0d0d1a 80%, transparent)", zIndex: 19 },
+  saveBtn: { width: "100%", padding: 15, background: "linear-gradient(135deg,#7b4fff,#ff4fa0)", border: "none", borderRadius: 14, color: "#fff", fontSize: 15, fontWeight: 800, cursor: "pointer" },
   nav: { position: "fixed", bottom: 0, left: "50%", transform: "translateX(-50%)", width: "100%", maxWidth: 430, background: "#0d0d1a", borderTop: "1px solid #1e1e30", display: "flex", justifyContent: "space-around", padding: "8px 0 max(8px,env(safe-area-inset-bottom))", zIndex: 20 },
   navBtn: { display: "flex", flexDirection: "column", alignItems: "center", gap: 2, background: "none", border: "none", color: "#f0f0ff", cursor: "pointer", opacity: 0.4, padding: "4px 10px" },
   navBtnActive: { opacity: 1 },
